@@ -40,6 +40,7 @@ type PublicPlayerInfo struct {
 	Score       int    `json:"score"`
 	CardCount   int    `json:"cardCount"`
 	RoundScores []int  `json:"roundScores"`
+	HasLeft     bool   `json:"hasLeft"`
 }
 
 type GameStateView struct {
@@ -59,11 +60,12 @@ type GameStateView struct {
 }
 
 type Room struct {
-	ID      string
-	HostID  string
-	Clients map[*websocket.Conn]*Client
-	Game    *game.Game
-	Mutex   sync.RWMutex
+	ID         string
+	HostID     string
+	Clients    map[*websocket.Conn]*Client
+	Game       *game.Game
+	botRunning bool
+	Mutex      sync.RWMutex
 }
 
 type RoomManager struct {
@@ -145,6 +147,7 @@ func (r *Room) BroadcastGameState() {
 			Score:       p.Score,
 			CardCount:   len(p.Hand),
 			RoundScores: p.RoundScores,
+			HasLeft:     p.HasLeft,
 		}
 	}
 

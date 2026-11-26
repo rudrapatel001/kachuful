@@ -21,6 +21,7 @@ type PlayerState struct {
 	TricksWon   int
 	Score       int
 	RoundScores []int
+	HasLeft     bool
 }
 
 type PlayedCard struct {
@@ -166,4 +167,36 @@ func (g *Game) SubmitBid(playerIdx int, bid int) error {
 	}
 
 	return nil
+}
+
+// GetAutoBid returns a valid automatic bid for a player who exited mid-match.
+func (g *Game) GetAutoBid(playerIdx int) int {
+	if playerIdx == g.DealerIndex {
+		otherBids := 0
+		for i, p := range g.Players {
+			if i != playerIdx && p.Bid >= 0 {
+				otherBids += p.Bid
+			}
+		}
+		if otherBids == g.CardsDealtThisRound {
+			return 1
+		}
+	}
+	return 0
+}
+
+// GetAutoCardIndex returns the first legal card index for a player who exited mid-match.
+func (g *Game) GetAutoCardIndex(playerIdx int) int {
+	hand := g.Players[playerIdx].Hand
+	if len(hand) == 0 {
+		return -1
+	}
+	if len(g.CurrentTrick) > 0 {
+		for i, c := range hand {
+			if string(c.Suit) == g.LedSuit {
+				return i
+			}
+		}
+	}
+	return 0
 }

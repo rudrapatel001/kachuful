@@ -43,19 +43,25 @@ func ServeWS(rm *RoomManager, w http.ResponseWriter, r *http.Request) {
 	reconnected := false
 
 	// If a game is active and this name belongs to a player in the match, restore their seat
-	if room.Game != nil && findPlayerIndex(room.Game, rawName) != -1 {
-		playerID = rawName
-		reconnected = true
+	if room.Game != nil {
+		existingIdx := findPlayerIndex(room.Game, rawName)
+		if existingIdx != -1 {
+			playerID = rawName
+			reconnected = true
+			room.Game.Players[existingIdx].HasLeft = false
 
-		// Close and replace any stale socket still holding this player's name
-		for oldConn, existingClient := range room.Clients {
-			if existingClient.ID == rawName {
-				delete(room.Clients, oldConn)
-				oldConn.Close()
-				break
+			// Close and replace any stale socket still holding this player's name
+			for oldConn, existingClient := range room.Clients {
+				if existingClient.ID == rawName {
+					delete(room.Clients, oldConn)
+					oldConn.Close()
+					break
+				}
 			}
 		}
-	} else {
+	}
+
+	if !reconnected {
 		playerID = rawName
 		suffix := 2
 		for isNameTaken(room, playerID) {
@@ -90,6 +96,87 @@ func sendError(client *Client, message string) {
 		Action:  "ERROR",
 		Payload: message,
 	})
+}
+
+func scheduleBotTurnIfNeeded(r *Room) {
+	r.Mutex.Lock()
+	if r.Game == nil || r.Game.Phase == game.PhaseGameOver || r.botRunning {
+		r.Mutex.Unlock()
+		return
+	}
+	if len(r.Clients) == 0 {
+		r.Game = nil
+		r.Mutex.Unlock()
+		return
+	}
+	if r.Game.Phase == game.PhasePlaying && len(r.Game.CurrentTrick) >= len(r.Game.Players) {
+		r.Mutex.Unlock()
+		return
+	}
+	turnIdx := r.Game.TurnIndex
+	if turnIdx < 0 || turnIdx >= len(r.Game.Players) || !r.Game.Players[turnIdx].HasLeft {
+		r.Mutex.Unlock()
+		return
+	}
+	r.botRunning = true
+	r.Mutex.Unlock()
+
+	go func() {
+		time.Sleep(600 * time.Millisecond)
+
+		r.Mutex.Lock()
+		r.botRunning = false
+		if r.Game == nil || r.Game.Phase == game.PhaseGameOver {
+			r.Mutex.Unlock()
+			return
+		}
+		if len(r.Clients) == 0 {
+			r.Game = nil
+			r.Mutex.Unlock()
+			return
+		}
+		if r.Game.Phase == game.PhasePlaying && len(r.Game.CurrentTrick) >= len(r.Game.Players) {
+			r.Mutex.Unlock()
+			return
+		}
+		idx := r.Game.TurnIndex
+		if idx < 0 || idx >= len(r.Game.Players) || !r.Game.Players[idx].HasLeft {
+			r.Mutex.Unlock()
+			return
+		}
+
+		trickComplete := false
+		if r.Game.Phase == game.PhaseBidding {
+			bid := r.Game.GetAutoBid(idx)
+			_ = r.Game.SubmitBid(idx, bid)
+		} else if r.Game.Phase == game.PhasePlaying {
+			cardIdx := r.Game.GetAutoCardIndex(idx)
+			if cardIdx >= 0 {
+				tc, err := r.Game.PlayCard(idx, cardIdx)
+				if err == nil {
+					trickComplete = tc
+				}
+			}
+		}
+		r.Mutex.Unlock()
+
+		r.BroadcastGameState()
+
+		if trickComplete {
+			go func(roomRef *Room) {
+				time.Sleep(1500 * time.Millisecond)
+				roomRef.Mutex.Lock()
+				if roomRef.Game != nil && len(roomRef.Game.CurrentTrick) == len(roomRef.Game.Players) {
+					roomRef.Game.ResolveTrick()
+				}
+				roomRef.Mutex.Unlock()
+				roomRef.BroadcastGameState()
+				scheduleBotTurnIfNeeded(roomRef)
+			}(r)
+		} else {
+			scheduleBotTurnIfNeeded(r)
+		}
+	}()
 }
 
 func handleClientMessages(room *Room, client *Client) {
@@ -192,6 +279,7 @@ func handleClientMessages(room *Room, client *Client) {
 				continue
 			}
 			room.BroadcastGameState()
+			scheduleBotTurnIfNeeded(room)
 
 		case "PLAY_CARD":
 			cardIdxFloat, ok := msg.Payload.(float64)
@@ -226,8 +314,25 @@ func handleClientMessages(room *Room, client *Client) {
 					}
 					r.Mutex.Unlock()
 					r.BroadcastGameState()
+					scheduleBotTurnIfNeeded(r)
 				}(room)
+			} else {
+				scheduleBotTurnIfNeeded(room)
 			}
+
+		case "LEAVE_MATCH":
+			room.Mutex.Lock()
+			if room.Game != nil {
+				playerIdx := findPlayerIndex(room.Game, client.ID)
+				if playerIdx != -1 {
+					room.Game.Players[playerIdx].HasLeft = true
+				}
+			}
+			room.Mutex.Unlock()
+
+			room.BroadcastGameState()
+			scheduleBotTurnIfNeeded(room)
+			return
 
 		case "BACK_TO_LOBBY":
 			room.Mutex.Lock()
