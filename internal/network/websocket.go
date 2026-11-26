@@ -322,13 +322,36 @@ func handleClientMessages(room *Room, client *Client) {
 
 		case "LEAVE_MATCH":
 			room.Mutex.Lock()
+			endMatch := false
 			if room.Game != nil {
 				playerIdx := findPlayerIndex(room.Game, client.ID)
 				if playerIdx != -1 {
 					room.Game.Players[playerIdx].HasLeft = true
 				}
+
+				activeCount := 0
+				for _, p := range room.Game.Players {
+					if !p.HasLeft {
+						activeCount++
+					}
+				}
+				if activeCount <= 1 {
+					room.Game = nil
+					endMatch = true
+				}
 			}
 			room.Mutex.Unlock()
+
+			if endMatch {
+				room.RemoveClient(client.Conn)
+				room.Broadcast(GameMessage{Action: "RETURN_TO_LOBBY"})
+				room.BroadcastLobby()
+				room.Broadcast(GameMessage{
+					Action:  "ERROR",
+					Payload: "Match ended because all other players left.",
+				})
+				return
+			}
 
 			room.BroadcastGameState()
 			scheduleBotTurnIfNeeded(room)
